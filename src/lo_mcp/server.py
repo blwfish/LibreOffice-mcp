@@ -48,29 +48,38 @@ def get_text(doc_id: str) -> dict:
 def insert_text(
     doc_id: str,
     text: str,
-    paragraph_break: bool = False,
+    break_before: str = "none",
     bold: bool = False,
     italic: bool = False,
     underline: bool = False,
     style: str | None = None,
+    char_style: str | None = None,
 ) -> dict:
     """Append text at the end of a Writer document.
 
+    break_before controls what precedes the text: "none" (default, keeps
+    typing in the current paragraph), "line" (soft line break, same
+    paragraph), "paragraph" (starts a new paragraph), or "page" (starts a
+    new paragraph on a new page).
+
     bold/italic/underline apply direct character formatting to just the text
     being inserted. style is a paragraph style name (e.g. "Heading 1",
-    "Heading 2", "Title", "Default Paragraph Style") applied to the paragraph
-    the text lands in.
+    "Title") applied to the paragraph the text lands in; char_style is a
+    character style name (e.g. "Emphasis", "Strong Emphasis") applied to
+    just the inserted run. Use list_styles to see what's actually available
+    in a given document rather than guessing names.
     """
     return lo.call(
         "insert_text",
         {
             "doc_id": doc_id,
             "text": text,
-            "paragraph_break": paragraph_break,
+            "break_before": break_before,
             "bold": bold,
             "italic": italic,
             "underline": underline,
             "style": style,
+            "char_style": char_style,
         },
     )
 
@@ -86,6 +95,29 @@ def set_paragraph_style(doc_id: str, style: str, paragraph_index: int | None = N
         "set_paragraph_style",
         {"doc_id": doc_id, "style": style, "paragraph_index": paragraph_index},
     )
+
+
+@mcp.tool()
+def get_paragraph_style(doc_id: str, paragraph_index: int | None = None) -> dict:
+    """Read a paragraph's style name and break type. Defaults to the last paragraph."""
+    return lo.call(
+        "get_paragraph_style",
+        {"doc_id": doc_id, "paragraph_index": paragraph_index},
+    )
+
+
+@mcp.tool()
+def list_styles(doc_id: str, family: str = "ParagraphStyles") -> dict:
+    """List style names available in a document for a given style family.
+
+    family is one of "ParagraphStyles" (default), "CharacterStyles",
+    "PageStyles", "FrameStyles", "NumberingStyles". Use this before calling
+    insert_text(style=...)/char_style=.../set_paragraph_style to find valid
+    names instead of guessing — built-in style sets vary slightly by
+    LibreOffice version and locale, and documents can also define custom
+    styles.
+    """
+    return lo.call("list_styles", {"doc_id": doc_id, "family": family})
 
 
 @mcp.tool()

@@ -22,14 +22,21 @@ import uuid
 import uno
 import unohelper
 from com.sun.star.task import XJobExecutor
+from com.sun.star.task import XJob
 from com.sun.star.lang import XServiceInfo
 from com.sun.star.beans import PropertyValue
 from com.sun.star.awt.FontWeight import BOLD as FONT_WEIGHT_BOLD
 from com.sun.star.awt.FontSlant import ITALIC as FONT_SLANT_ITALIC
 from com.sun.star.awt.FontUnderline import SINGLE as FONT_UNDERLINE_SINGLE
+from com.sun.star.text.ControlCharacter import LINE_BREAK, PARAGRAPH_BREAK
+from com.sun.star.style.BreakType import PAGE_BEFORE as BREAK_PAGE_BEFORE
 
 IMPLEMENTATION_NAME = "net.blw.lomcp.Extension"
-SERVICE_NAMES = ("com.sun.star.task.JobExecutor",)
+# JobExecutor: the Tools > lo-mcp menu (Addons.xcu) dispatches
+# service:net.blw.lomcp.Extension?start / ?stop to trigger().
+# Job: Jobs.xcu registers this same implementation to auto-run on the
+# OnStartApp / onFirstVisibleTask application events, via execute().
+SERVICE_NAMES = ("com.sun.star.task.JobExecutor", "com.sun.star.task.Job")
 
 HOST = "127.0.0.1"
 PORT = 8794
@@ -54,6 +61,36 @@ def _cell_name(row, col):
     # UNO TextTable cell names are column-letter + 1-based row, e.g. "A1".
     # Callers already reject cols > 26 before this runs.
     return f"{chr(ord('A') + col)}{row + 1}"
+
+
+_BREAK_BEFORE_VALUES = {"none", "line", "paragraph", "page"}
+
+
+def _break_type_name(break_type):
+    # com.sun.star.style.BreakType is an IDL *enum* (unlike FontWeight/
+    # FontSlant/FontUnderline, which are *constants* groups of plain
+    # numbers) — PyUNO wraps enum values as uno.Enum objects whose .value
+    # is the member's string name (e.g. "PAGE_BEFORE"), not an int.
+    return str(getattr(break_type, "value", break_type)).lower()
+
+
+def _paragraphs(doc):
+    return [
+        el
+        for el in _iter_enum(doc.getText().createEnumeration())
+        if el.supportsService("com.sun.star.text.Paragraph")
+    ]
+
+
+def _paragraph_at(doc, index):
+    paras = _paragraphs(doc)
+    if not paras:
+        raise ValueError("document has no paragraphs")
+    if index is None:
+        index = len(paras) - 1
+    if not (-len(paras) <= index < len(paras)):
+        raise ValueError(f"paragraph_index {index} out of range; document has {len(paras)} paragraphs")
+    return paras[index], len(paras)
 
 
 # Export filter names, keyed by target format. Writer-only for now.
@@ -128,15 +165,28 @@ class WriterOps:
         text = doc.getText()
         cursor = text.createTextCursor()
         cursor.gotoEnd(False)
-        if args.get("paragraph_break"):
-            from com.sun.star.text.ControlCharacter import PARAGRAPH_BREAK
 
+        break_before = args.get("break_before") or "none"
+        if break_before not in _BREAK_BEFORE_VALUES:
+            raise ValueError(
+                f"break_before must be one of {sorted(_BREAK_BEFORE_VALUES)}, got {break_before!r}"
+            )
+        if break_before == "line":
+            text.insertControlCharacter(cursor, LINE_BREAK, False)
+        elif break_before in ("paragraph", "page"):
             text.insertControlCharacter(cursor, PARAGRAPH_BREAK, False)
+            if break_before == "page":
+                # Standard UNO idiom: after inserting the paragraph break the
+                # cursor sits in the new (now-current) paragraph, so setting
+                # BreakType here sets that paragraph's own break property —
+                # this is what "Insert > Page Break" does under the hood.
+                cursor.BreakType = BREAK_PAGE_BEFORE
+
         # Mark where the new text starts so formatting below applies only to
         # what we just inserted, not anything already in the document.
         insert_start = text.createTextCursorByRange(cursor.getEnd())
         text.insertString(cursor, args["text"], False)
-        if args.get("bold") or args.get("italic") or args.get("underline") or args.get("style"):
+        if any(args.get(k) for k in ("bold", "italic", "underline", "style", "char_style")):
             fmt_cursor = text.createTextCursorByRange(insert_start.getStart())
             fmt_cursor.gotoRange(cursor.getEnd(), True)
             if args.get("bold"):
@@ -147,25 +197,33 @@ class WriterOps:
                 fmt_cursor.CharUnderline = FONT_UNDERLINE_SINGLE
             if args.get("style"):
                 fmt_cursor.ParaStyleName = args["style"]
+            if args.get("char_style"):
+                fmt_cursor.CharStyleName = args["char_style"]
         return {"ok": True}
 
     def set_paragraph_style(self, args):
         doc = self._doc(args["doc_id"])
-        style = args["style"]
-        index = args.get("paragraph_index")
-        paras = [
-            el
-            for el in _iter_enum(doc.getText().createEnumeration())
-            if el.supportsService("com.sun.star.text.Paragraph")
-        ]
-        if not paras:
-            raise ValueError("document has no paragraphs")
-        if index is None:
-            index = len(paras) - 1
-        if not (-len(paras) <= index < len(paras)):
-            raise ValueError(f"paragraph_index {index} out of range; document has {len(paras)} paragraphs")
-        paras[index].ParaStyleName = style
-        return {"ok": True, "paragraph_count": len(paras)}
+        para, count = _paragraph_at(doc, args.get("paragraph_index"))
+        para.ParaStyleName = args["style"]
+        return {"ok": True, "paragraph_count": count}
+
+    def get_paragraph_style(self, args):
+        doc = self._doc(args["doc_id"])
+        para, count = _paragraph_at(doc, args.get("paragraph_index"))
+        return {
+            "style": para.ParaStyleName,
+            "break_type": _break_type_name(para.BreakType),
+            "paragraph_count": count,
+        }
+
+    def list_styles(self, args):
+        doc = self._doc(args["doc_id"])
+        family = args.get("family") or "ParagraphStyles"
+        families = doc.getStyleFamilies()
+        if not families.hasByName(family):
+            raise ValueError(f"no style family {family!r}; known: {sorted(families.getElementNames())}")
+        names = list(families.getByName(family).getElementNames())
+        return {"family": family, "styles": sorted(names)}
 
     def insert_table(self, args):
         doc = self._doc(args["doc_id"])
@@ -281,6 +339,8 @@ _OPS = {
         "get_text",
         "insert_text",
         "set_paragraph_style",
+        "get_paragraph_style",
+        "list_styles",
         "insert_table",
         "get_table_cell",
         "find_and_replace",
@@ -332,31 +392,50 @@ _server = None
 _server_thread = None
 
 
-class LoMcpExtension(unohelper.Base, XJobExecutor, XServiceInfo):
+class LoMcpExtension(unohelper.Base, XJobExecutor, XJob, XServiceInfo):
     def __init__(self, ctx):
         self.ctx = ctx
 
     def trigger(self, args):
-        global _ops_instance, _server, _server_thread
+        """XJobExecutor: manual start/stop from the Tools > lo-mcp menu."""
         try:
             if args == "start":
-                if _server is not None:
-                    logger.info("lo-mcp server already running")
-                    return
-                _ops_instance = WriterOps(self.ctx)
-                _server = http.server.ThreadingHTTPServer((HOST, PORT), RequestHandler)
-                _server_thread = threading.Thread(target=_server.serve_forever, daemon=True)
-                _server_thread.start()
-                logger.info("lo-mcp server started on http://%s:%s", HOST, PORT)
+                self._start()
             elif args == "stop":
-                if _server is None:
-                    return
-                _server.shutdown()
-                _server = None
-                _ops_instance = None
-                logger.info("lo-mcp server stopped")
+                self._stop()
         except Exception:
             logger.error(traceback.format_exc())
+
+    def execute(self, args):
+        """XJob: auto-start on the OnStartApp/onFirstVisibleTask events
+        (Jobs.xcu). _start() is idempotent, so it's harmless if both events
+        fire and call this twice.
+        """
+        try:
+            self._start()
+        except Exception:
+            logger.error(traceback.format_exc())
+        return ()
+
+    def _start(self):
+        global _ops_instance, _server, _server_thread
+        if _server is not None:
+            logger.info("lo-mcp server already running")
+            return
+        _ops_instance = WriterOps(self.ctx)
+        _server = http.server.ThreadingHTTPServer((HOST, PORT), RequestHandler)
+        _server_thread = threading.Thread(target=_server.serve_forever, daemon=True)
+        _server_thread.start()
+        logger.info("lo-mcp server started on http://%s:%s", HOST, PORT)
+
+    def _stop(self):
+        global _ops_instance, _server
+        if _server is None:
+            return
+        _server.shutdown()
+        _server = None
+        _ops_instance = None
+        logger.info("lo-mcp server stopped")
 
     def getImplementationName(self):
         return IMPLEMENTATION_NAME

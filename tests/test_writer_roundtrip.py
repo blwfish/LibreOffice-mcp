@@ -75,7 +75,7 @@ def test_reopen_edit_save_roundtrip(tmp_path):
     out = lo.call("get_text", {"doc_id": doc_id2})
     assert out["text"] == "first line"
 
-    lo.call("insert_text", {"doc_id": doc_id2, "text": " second line", "paragraph_break": True})
+    lo.call("insert_text", {"doc_id": doc_id2, "text": " second line", "break_before": "paragraph"})
     lo.call("save_document", {"doc_id": doc_id2})
     result = lo.call("close_document", {"doc_id": doc_id2})
     assert result["closed"] == doc_id2, f"expected clean close after in-place save, got {result}"
@@ -100,7 +100,7 @@ def test_insert_text_formatting_and_paragraph_style():
             {
                 "doc_id": doc_id,
                 "text": "bold and italic",
-                "paragraph_break": True,
+                "break_before": "paragraph",
                 "bold": True,
                 "italic": True,
             },
@@ -109,7 +109,7 @@ def test_insert_text_formatting_and_paragraph_style():
         assert out["text"] == "Title Line\nbold and italic"
 
         # set_paragraph_style on an already-written paragraph, default (last)
-        lo.call("insert_text", {"doc_id": doc_id, "text": "make me a heading", "paragraph_break": True})
+        lo.call("insert_text", {"doc_id": doc_id, "text": "make me a heading", "break_before": "paragraph"})
         result = lo.call("set_paragraph_style", {"doc_id": doc_id, "style": "Heading 2"})
         assert result["paragraph_count"] == 3
 
@@ -181,3 +181,68 @@ def test_multi_document_isolation():
     finally:
         lo.call("close_document", {"doc_id": id_a, "force": True})
         lo.call("close_document", {"doc_id": id_b, "force": True})
+
+
+def test_break_before_line_does_not_start_a_new_paragraph():
+    doc = lo.call("create_document")
+    doc_id = doc["doc_id"]
+    try:
+        lo.call("insert_text", {"doc_id": doc_id, "text": "line one"})
+        lo.call("insert_text", {"doc_id": doc_id, "text": "line two", "break_before": "line"})
+        out = lo.call("get_text", {"doc_id": doc_id})
+        assert out["text"] == "line one\nline two"  # visually a break, but...
+        style = lo.call("get_paragraph_style", {"doc_id": doc_id})
+        assert style["paragraph_count"] == 1  # ...still one paragraph, unlike break_before="paragraph"
+    finally:
+        lo.call("close_document", {"doc_id": doc_id, "force": True})
+
+
+def test_break_before_paragraph_vs_page():
+    doc = lo.call("create_document")
+    doc_id = doc["doc_id"]
+    try:
+        lo.call("insert_text", {"doc_id": doc_id, "text": "page one"})
+        first = lo.call("get_paragraph_style", {"doc_id": doc_id, "paragraph_index": 0})
+        assert first["break_type"] == "none"
+
+        lo.call("insert_text", {"doc_id": doc_id, "text": "still page one", "break_before": "paragraph"})
+        second = lo.call("get_paragraph_style", {"doc_id": doc_id, "paragraph_index": 1})
+        assert second["break_type"] == "none"
+
+        lo.call("insert_text", {"doc_id": doc_id, "text": "page two", "break_before": "page"})
+        third = lo.call("get_paragraph_style", {"doc_id": doc_id, "paragraph_index": 2})
+        assert third["break_type"] == "page_before"
+        assert third["paragraph_count"] == 3
+    finally:
+        lo.call("close_document", {"doc_id": doc_id, "force": True})
+
+
+def test_break_before_rejects_unknown_value():
+    doc = lo.call("create_document")
+    doc_id = doc["doc_id"]
+    try:
+        with pytest.raises(Exception):
+            lo.call("insert_text", {"doc_id": doc_id, "text": "x", "break_before": "chapter"})
+    finally:
+        lo.call("close_document", {"doc_id": doc_id, "force": True})
+
+
+def test_char_style_and_list_styles():
+    doc = lo.call("create_document")
+    doc_id = doc["doc_id"]
+    try:
+        para_styles = lo.call("list_styles", {"doc_id": doc_id})["styles"]
+        assert "Heading 1" in para_styles
+        assert "Standard" in para_styles  # LibreOffice's internal name; UI shows "Default Paragraph Style"
+
+        char_styles = lo.call("list_styles", {"doc_id": doc_id, "family": "CharacterStyles"})["styles"]
+        assert "Strong Emphasis" in char_styles
+
+        lo.call("insert_text", {"doc_id": doc_id, "text": "emphasized", "char_style": "Strong Emphasis"})
+        out = lo.call("get_text", {"doc_id": doc_id})
+        assert out["text"] == "emphasized"
+
+        with pytest.raises(Exception):
+            lo.call("list_styles", {"doc_id": doc_id, "family": "NotARealFamily"})
+    finally:
+        lo.call("close_document", {"doc_id": doc_id, "force": True})
