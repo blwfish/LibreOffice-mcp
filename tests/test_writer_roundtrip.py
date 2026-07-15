@@ -88,3 +88,96 @@ def test_reopen_edit_save_roundtrip(tmp_path):
         assert "second line" in out2["text"]
     finally:
         lo.call("close_document", {"doc_id": doc_id3, "force": True})
+
+
+def test_insert_text_formatting_and_paragraph_style():
+    doc = lo.call("create_document")
+    doc_id = doc["doc_id"]
+    try:
+        lo.call("insert_text", {"doc_id": doc_id, "text": "Title Line", "style": "Heading 1"})
+        lo.call(
+            "insert_text",
+            {
+                "doc_id": doc_id,
+                "text": "bold and italic",
+                "paragraph_break": True,
+                "bold": True,
+                "italic": True,
+            },
+        )
+        out = lo.call("get_text", {"doc_id": doc_id})
+        assert out["text"] == "Title Line\nbold and italic"
+
+        # set_paragraph_style on an already-written paragraph, default (last)
+        lo.call("insert_text", {"doc_id": doc_id, "text": "make me a heading", "paragraph_break": True})
+        result = lo.call("set_paragraph_style", {"doc_id": doc_id, "style": "Heading 2"})
+        assert result["paragraph_count"] == 3
+
+        with pytest.raises(Exception):
+            lo.call("set_paragraph_style", {"doc_id": doc_id, "style": "Heading 2", "paragraph_index": 99})
+    finally:
+        lo.call("close_document", {"doc_id": doc_id, "force": True})
+
+
+def test_insert_table_with_data_and_header():
+    doc = lo.call("create_document")
+    doc_id = doc["doc_id"]
+    try:
+        result = lo.call(
+            "insert_table",
+            {
+                "doc_id": doc_id,
+                "rows": 3,
+                "cols": 2,
+                "data": [["Name", "Qty"], ["bolt", "12"], ["nut", "8"]],
+                "header": True,
+            },
+        )
+        assert result["rows"] == 3
+        assert result["cols"] == 2
+        table_name = result["name"]
+
+        assert lo.call("get_table_cell", {"doc_id": doc_id, "cell": "A1"})["text"] == "Name"
+        assert lo.call("get_table_cell", {"doc_id": doc_id, "cell": "B2"})["text"] == "12"
+        assert lo.call("get_table_cell", {"doc_id": doc_id, "cell": "A3"})["text"] == "nut"
+        # explicit table_name path
+        assert (
+            lo.call("get_table_cell", {"doc_id": doc_id, "cell": "A1", "table_name": table_name})["text"]
+            == "Name"
+        )
+
+        with pytest.raises(Exception):
+            lo.call("get_table_cell", {"doc_id": doc_id, "cell": "Z9"})
+    finally:
+        lo.call("close_document", {"doc_id": doc_id, "force": True})
+
+
+def test_insert_table_rejects_degenerate_dimensions():
+    doc = lo.call("create_document")
+    doc_id = doc["doc_id"]
+    try:
+        with pytest.raises(Exception):
+            lo.call("insert_table", {"doc_id": doc_id, "rows": 0, "cols": 2})
+        with pytest.raises(Exception):
+            lo.call("insert_table", {"doc_id": doc_id, "rows": 2, "cols": 27})
+    finally:
+        lo.call("close_document", {"doc_id": doc_id, "force": True})
+
+
+def test_multi_document_isolation():
+    doc_a = lo.call("create_document")
+    doc_b = lo.call("create_document")
+    id_a, id_b = doc_a["doc_id"], doc_b["doc_id"]
+    assert id_a != id_b
+    try:
+        lo.call("insert_text", {"doc_id": id_a, "text": "document A content"})
+        lo.call("insert_text", {"doc_id": id_b, "text": "document B content"})
+
+        open_ids = {d["doc_id"] for d in lo.call("list_documents")["documents"]}
+        assert {id_a, id_b} <= open_ids
+
+        assert lo.call("get_text", {"doc_id": id_a})["text"] == "document A content"
+        assert lo.call("get_text", {"doc_id": id_b})["text"] == "document B content"
+    finally:
+        lo.call("close_document", {"doc_id": id_a, "force": True})
+        lo.call("close_document", {"doc_id": id_b, "force": True})

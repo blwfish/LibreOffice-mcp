@@ -24,6 +24,9 @@ import unohelper
 from com.sun.star.task import XJobExecutor
 from com.sun.star.lang import XServiceInfo
 from com.sun.star.beans import PropertyValue
+from com.sun.star.awt.FontWeight import BOLD as FONT_WEIGHT_BOLD
+from com.sun.star.awt.FontSlant import ITALIC as FONT_SLANT_ITALIC
+from com.sun.star.awt.FontUnderline import SINGLE as FONT_UNDERLINE_SINGLE
 
 IMPLEMENTATION_NAME = "net.blw.lomcp.Extension"
 SERVICE_NAMES = ("com.sun.star.task.JobExecutor",)
@@ -40,6 +43,17 @@ def _prop(name, value):
     p.Name = name
     p.Value = value
     return p
+
+
+def _iter_enum(enum):
+    while enum.hasMoreElements():
+        yield enum.nextElement()
+
+
+def _cell_name(row, col):
+    # UNO TextTable cell names are column-letter + 1-based row, e.g. "A1".
+    # Callers already reject cols > 26 before this runs.
+    return f"{chr(ord('A') + col)}{row + 1}"
 
 
 # Export filter names, keyed by target format. Writer-only for now.
@@ -118,8 +132,90 @@ class WriterOps:
             from com.sun.star.text.ControlCharacter import PARAGRAPH_BREAK
 
             text.insertControlCharacter(cursor, PARAGRAPH_BREAK, False)
+        # Mark where the new text starts so formatting below applies only to
+        # what we just inserted, not anything already in the document.
+        insert_start = text.createTextCursorByRange(cursor.getEnd())
         text.insertString(cursor, args["text"], False)
+        if args.get("bold") or args.get("italic") or args.get("underline") or args.get("style"):
+            fmt_cursor = text.createTextCursorByRange(insert_start.getStart())
+            fmt_cursor.gotoRange(cursor.getEnd(), True)
+            if args.get("bold"):
+                fmt_cursor.CharWeight = FONT_WEIGHT_BOLD
+            if args.get("italic"):
+                fmt_cursor.CharPosture = FONT_SLANT_ITALIC
+            if args.get("underline"):
+                fmt_cursor.CharUnderline = FONT_UNDERLINE_SINGLE
+            if args.get("style"):
+                fmt_cursor.ParaStyleName = args["style"]
         return {"ok": True}
+
+    def set_paragraph_style(self, args):
+        doc = self._doc(args["doc_id"])
+        style = args["style"]
+        index = args.get("paragraph_index")
+        paras = [
+            el
+            for el in _iter_enum(doc.getText().createEnumeration())
+            if el.supportsService("com.sun.star.text.Paragraph")
+        ]
+        if not paras:
+            raise ValueError("document has no paragraphs")
+        if index is None:
+            index = len(paras) - 1
+        if not (-len(paras) <= index < len(paras)):
+            raise ValueError(f"paragraph_index {index} out of range; document has {len(paras)} paragraphs")
+        paras[index].ParaStyleName = style
+        return {"ok": True, "paragraph_count": len(paras)}
+
+    def insert_table(self, args):
+        doc = self._doc(args["doc_id"])
+        rows = int(args["rows"])
+        cols = int(args["cols"])
+        if rows < 1 or cols < 1:
+            raise ValueError(f"rows and cols must both be >= 1, got rows={rows} cols={cols}")
+        if cols > 26:
+            raise ValueError(f"insert_table supports at most 26 columns, got cols={cols}")
+        data = args.get("data")
+        header = bool(args.get("header", False))
+
+        table = doc.createInstance("com.sun.star.text.TextTable")
+        table.initialize(rows, cols)
+        text = doc.getText()
+        cursor = text.createTextCursor()
+        cursor.gotoEnd(False)
+        text.insertTextContent(cursor, table, False)
+
+        if data:
+            for r, row_values in enumerate(data[:rows]):
+                for c, value in enumerate(row_values[:cols]):
+                    table.getCellByName(_cell_name(r, c)).setString(str(value))
+
+        if header:
+            for c in range(cols):
+                cell = table.getCellByName(_cell_name(0, c))
+                cell_cursor = cell.getText().createTextCursor()
+                cell_cursor.gotoStart(False)
+                cell_cursor.gotoEnd(True)
+                cell_cursor.CharWeight = FONT_WEIGHT_BOLD
+
+        return {"ok": True, "name": table.getName(), "rows": rows, "cols": cols}
+
+    def get_table_cell(self, args):
+        doc = self._doc(args["doc_id"])
+        tables = doc.getTextTables()
+        name = args.get("table_name")
+        if name:
+            if not tables.hasByName(name):
+                raise ValueError(f"no table named {name!r}; known: {list(tables.getElementNames())}")
+            table = tables.getByName(name)
+        else:
+            if tables.getCount() == 0:
+                raise ValueError("document has no tables")
+            table = tables.getByIndex(0)
+        cell = args["cell"]
+        if cell not in table.getCellNames():
+            raise ValueError(f"no cell {cell!r} in table {table.getName()!r}; known: {list(table.getCellNames())}")
+        return {"text": table.getCellByName(cell).getString()}
 
     def find_and_replace(self, args):
         doc = self._doc(args["doc_id"])
@@ -184,6 +280,9 @@ _OPS = {
         "list_documents",
         "get_text",
         "insert_text",
+        "set_paragraph_style",
+        "insert_table",
+        "get_table_cell",
         "find_and_replace",
         "save_document",
         "export_document",
