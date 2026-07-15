@@ -1,0 +1,26 @@
+[project]
+name = "lo-mcp"
+version = "0.1.0"
+description = "stdio MCP server for LibreOffice Writer, via a small in-process LibreOffice extension over HTTP"
+requires-python = ">=3.13"
+dependencies = [
+    "mcp>=1.28.1",
+]
+
+[project.scripts]
+lo-mcp = "lo_mcp.server:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lo_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
