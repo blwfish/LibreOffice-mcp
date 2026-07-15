@@ -8,3 +8,11 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Test/tool caches
+.pytest_cache/
+
+# Editor/OS cruft
+.vscode/
+.idea/
+.DS_Store

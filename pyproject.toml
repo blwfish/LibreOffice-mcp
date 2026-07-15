@@ -2,6 +2,7 @@
 name = "lo-mcp"
 version = "0.1.0"
 description = "stdio MCP server for LibreOffice Writer, via a small in-process LibreOffice extension over HTTP"
+license = "MIT"
 requires-python = ">=3.13"
 dependencies = [
     "mcp>=1.28.1",
