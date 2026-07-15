@@ -138,20 +138,30 @@ class WriterOps:
                 raise ValueError("document has no location; provide path")
             doc.store()
             return {"path": uno.fileUrlToSystemPath(doc.getURL())}
-        return self._store_to(doc, path, args.get("format"))
+        # Save As semantics: the document now lives at `path` and is clean.
+        # storeAsURL (not storeToURL) is what sets the doc's own URL and
+        # clears isModified() — using storeToURL here left close_document
+        # refusing to close a document that had just been successfully saved.
+        filt, url = self._resolve(path, args.get("format"))
+        doc.storeAsURL(url, (_prop("FilterName", filt),))
+        return {"path": path, "filter": filt}
 
     def export_document(self, args):
         doc = self._doc(args["doc_id"])
-        return self._store_to(doc, args["path"], args.get("format"))
+        path = args["path"]
+        # Export semantics: write a copy to `path` without changing the
+        # document's own save location or modified state (e.g. exporting an
+        # in-progress .odt to .pdf shouldn't make the .odt look "saved").
+        filt, url = self._resolve(path, args.get("format"))
+        doc.storeToURL(url, (_prop("FilterName", filt),))
+        return {"path": path, "filter": filt}
 
-    def _store_to(self, doc, path, fmt):
+    def _resolve(self, path, fmt):
         fmt = fmt or path.rsplit(".", 1)[-1].lower()
         filt = _FILTERS.get(fmt)
         if not filt:
             raise ValueError(f"no filter for format={fmt!r}; known: {sorted(_FILTERS)}")
-        url = uno.systemPathToFileUrl(path)
-        doc.storeToURL(url, (_prop("FilterName", filt),))
-        return {"path": path, "filter": filt}
+        return filt, uno.systemPathToFileUrl(path)
 
     def close_document(self, args):
         doc_id = args["doc_id"]
