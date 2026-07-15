@@ -32,7 +32,10 @@ def ping(base_url: str = DEFAULT_URL, timeout: float = 3) -> bool:
 def call(op: str, args: dict | None = None, base_url: str = DEFAULT_URL, timeout: float = TIMEOUT):
     body = json.dumps({"op": op, "args": args or {}}).encode("utf-8")
     req = urllib.request.Request(
-        base_url, data=body, headers={"Content-Type": "application/json"}, method="POST"
+        base_url,
+        data=body,
+        headers={"Content-Type": "application/json", "X-Lo-Mcp-Client": "1"},
+        method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:

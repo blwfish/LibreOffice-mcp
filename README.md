@@ -32,8 +32,11 @@ connecting to the AICopilot addon running inside FreeCAD.
    ```
 2. Launch (or restart) LibreOffice.
 3. In LibreOffice: **lo-mcp menu > Start Server**. This opens
-   `127.0.0.1:8794` — local-only, no auth, only listens while you've
-   started it.
+   `127.0.0.1:8794` — local-only, only listens while you've started it.
+   No real authentication, but POSTs must carry an `X-Lo-Mcp-Client` header,
+   which forces browsers to CORS-preflight cross-origin requests; since the
+   server never answers with `Access-Control-Allow-Origin`, that preflight
+   fails and a malicious web page can't drive it.
 4. Register the MCP server:
    ```bash
    uv sync

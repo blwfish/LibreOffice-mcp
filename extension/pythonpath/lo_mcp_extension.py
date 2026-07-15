@@ -40,6 +40,12 @@ SERVICE_NAMES = ("com.sun.star.task.JobExecutor", "com.sun.star.task.Job")
 
 HOST = "127.0.0.1"
 PORT = 8794
+# Requiring a custom header forces browsers to CORS-preflight cross-origin
+# POSTs; since this server never answers with Access-Control-Allow-Origin,
+# the preflight fails and the browser blocks the request before it's sent.
+# Without this, a "simple" request (e.g. Content-Type: text/plain) from any
+# page the user has open would skip preflight and reach do_POST directly.
+REQUIRED_HEADER = "X-Lo-Mcp-Client"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("lo_mcp")
@@ -148,12 +154,21 @@ class WriterOps:
 
     def list_documents(self, args):
         out = []
+        stale = []
         for doc_id, doc in self.docs.items():
             try:
                 url = doc.getURL()
+                modified = bool(doc.isModified())
             except Exception:
-                url = ""
-            out.append({"doc_id": doc_id, "url": url, "modified": bool(doc.isModified())})
+                # Closed outside the API (e.g. the user closed the window in
+                # Writer directly) — the UNO proxy is now disposed and every
+                # call on it throws. Drop it instead of failing the whole
+                # listing over one stale doc_id.
+                stale.append(doc_id)
+                continue
+            out.append({"doc_id": doc_id, "url": url, "modified": modified})
+        for doc_id in stale:
+            del self.docs[doc_id]
         return {"documents": out}
 
     def get_text(self, args):
@@ -287,7 +302,13 @@ class WriterOps:
     def save_document(self, args):
         doc = self._doc(args["doc_id"])
         path = args.get("path")
+        fmt = args.get("format")
         if path is None:
+            if fmt is not None:
+                # doc.store() always re-saves in the document's current
+                # format; silently accepting `format` here would look like
+                # an in-place conversion but do nothing.
+                raise ValueError("format requires path; in-place save (path omitted) keeps the current format")
             if not doc.getURL():
                 raise ValueError("document has no location; provide path")
             doc.store()
@@ -296,7 +317,7 @@ class WriterOps:
         # storeAsURL (not storeToURL) is what sets the doc's own URL and
         # clears isModified() — using storeToURL here left close_document
         # refusing to close a document that had just been successfully saved.
-        filt, url = self._resolve(path, args.get("format"))
+        filt, url = self._resolve(path, fmt)
         doc.storeAsURL(url, (_prop("FilterName", filt),))
         return {"path": path, "filter": filt}
 
@@ -373,6 +394,9 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self._respond(404, {"ok": False, "error": "not found"})
 
     def do_POST(self):
+        if self.headers.get(REQUIRED_HEADER) is None:
+            self._respond(403, {"ok": False, "error": f"missing required {REQUIRED_HEADER} header"})
+            return
         try:
             length = int(self.headers.get("Content-Length", 0))
             req = json.loads(self.rfile.read(length) or b"{}")

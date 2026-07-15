@@ -5,7 +5,10 @@ its server started (lo-mcp menu > Start Server). Skipped automatically if
 the extension isn't reachable.
 """
 
+import json
 import os
+import urllib.error
+import urllib.request
 
 import pytest
 
@@ -164,6 +167,18 @@ def test_insert_table_rejects_degenerate_dimensions():
         lo.call("close_document", {"doc_id": doc_id, "force": True})
 
 
+def test_insert_table_accepts_max_columns():
+    """Boundary check: 26 columns (the documented max) must succeed, only 27+ is rejected."""
+    doc = lo.call("create_document")
+    doc_id = doc["doc_id"]
+    try:
+        result = lo.call("insert_table", {"doc_id": doc_id, "rows": 1, "cols": 26})
+        assert result["cols"] == 26
+        assert lo.call("get_table_cell", {"doc_id": doc_id, "cell": "Z1"})["text"] == ""
+    finally:
+        lo.call("close_document", {"doc_id": doc_id, "force": True})
+
+
 def test_multi_document_isolation():
     doc_a = lo.call("create_document")
     doc_b = lo.call("create_document")
@@ -225,6 +240,36 @@ def test_break_before_rejects_unknown_value():
             lo.call("insert_text", {"doc_id": doc_id, "text": "x", "break_before": "chapter"})
     finally:
         lo.call("close_document", {"doc_id": doc_id, "force": True})
+
+
+def test_save_document_rejects_format_without_path():
+    """Regression: format was silently ignored on in-place saves (path omitted),
+    since doc.store() always keeps the document's current format regardless of
+    what format was requested. Must error instead of silently no-op'ing.
+    """
+    doc = lo.call("create_document")
+    doc_id = doc["doc_id"]
+    try:
+        with pytest.raises(Exception):
+            lo.call("save_document", {"doc_id": doc_id, "format": "pdf"})
+    finally:
+        lo.call("close_document", {"doc_id": doc_id, "force": True})
+
+
+def test_post_without_required_header_is_rejected():
+    """Regression: the server used to accept any POST with a JSON body,
+    including "simple" cross-origin requests (e.g. Content-Type: text/plain)
+    that browsers send without a CORS preflight. Requests missing the
+    X-Lo-Mcp-Client header — which forces a preflight the server never
+    approves — must now be rejected outright.
+    """
+    body = json.dumps({"op": "list_documents", "args": {}}).encode("utf-8")
+    req = urllib.request.Request(
+        lo.DEFAULT_URL, data=body, headers={"Content-Type": "application/json"}, method="POST"
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(req, timeout=lo.TIMEOUT)
+    assert exc_info.value.code == 403
 
 
 def test_char_style_and_list_styles():

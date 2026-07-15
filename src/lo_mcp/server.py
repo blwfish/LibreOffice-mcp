@@ -89,7 +89,8 @@ def set_paragraph_style(doc_id: str, style: str, paragraph_index: int | None = N
     """Apply a paragraph style (e.g. "Heading 1", "Title") to an existing paragraph.
 
     Defaults to the last paragraph if paragraph_index is omitted. Index is
-    0-based and counts paragraphs only — tables don't count.
+    0-based (negative indices count from the end, Python-style) and counts
+    paragraphs only — tables don't count.
     """
     return lo.call(
         "set_paragraph_style",
@@ -99,7 +100,10 @@ def set_paragraph_style(doc_id: str, style: str, paragraph_index: int | None = N
 
 @mcp.tool()
 def get_paragraph_style(doc_id: str, paragraph_index: int | None = None) -> dict:
-    """Read a paragraph's style name and break type. Defaults to the last paragraph."""
+    """Read a paragraph's style name and break type. Defaults to the last paragraph.
+
+    paragraph_index is 0-based; negative indices count from the end, Python-style.
+    """
     return lo.call(
         "get_paragraph_style",
         {"doc_id": doc_id, "paragraph_index": paragraph_index},
